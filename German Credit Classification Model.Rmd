@@ -1,0 +1,544 @@
+---
+title: "German Credit Risk Analysis using Multiple Classification Models"
+author: "Akshay Kher"
+date: "May 4, 2019"
+output: html_document
+---
+
+# {.tabset .tabset-fade}
+
+## Intro
+
+**Data: ** The German credit scoring data is a dataset provided by Prof. Hogmann. The data set has information about 1000 individuals, on the basis of which they have been classified as risky or not.
+
+**Goal:** Compare the performance of various classification models on predicting the risk of the loans for 1000 individuals.
+
+**Approach:** Compare the asymmetric cost for train and test set for 4 different classification models.
+
+**Major Findings:** In this case, predictive power of GAM > Logistic Regression > Neural Network >  Classification Tree
+
+***
+
+**Loading Libraries**
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(DT)
+library(glmnet)
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(knitr)
+library(mgcv)
+library(nnet)
+library(NeuralNetTools)
+library(e1071)
+library(verification)
+```
+
+***
+
+**Loading Data**
+```{r}
+german.data <- read.table("http://archive.ics.uci.edu/ml/machine-learning-databases/statlog/german/german.data")
+
+colnames(german.data) <- c("chk_acct", "duration", "credit_his", "purpose", 
+                             "amount", "saving_acct", "present_emp", "installment_rate", "sex", "other_debtor", 
+                             "present_resid", "property", "age", "other_install", "housing", "n_credits", 
+                             "job", "n_people", "telephone", "foreign", "response")
+german.data$response <- german.data$response - 1
+german.data$response <- as.factor(german.data$response)
+```
+
+***
+
+**Splitting German Credit Data into train and test**
+```{r}
+set.seed(12871014)
+trainrows <- sample(nrow(german.data), nrow(german.data) * 0.75)
+germandata.train <- german.data[trainrows, ]
+germandata.test <- german.data[-trainrows,]
+```
+
+## Logistic Regression
+
+***
+
+**Running Logistic Regression on all variables. Using stepwise AIC to select most important variables**
+```{r results=FALSE}
+germandata.train.glm0 <- glm(response~., family = binomial, germandata.train)
+step(germandata.train.glm0)
+```
+
+***
+
+**Running Logistic Regression for only the important variables**
+```{r}
+germandata.train.glm0<- glm(formula = response ~ chk_acct + duration + credit_his + purpose + 
+      amount + saving_acct + present_emp + installment_rate + sex + 
+      other_install + housing + telephone + foreign, family = binomial, 
+    data = germandata.train)
+summary(germandata.train.glm0)
+```
+
+***
+
+**Finding the optimal probability cutoff value - Symmetric Cost (1:1)**
+```{r}
+# predicting on train set
+predict_logit_train <- predict(germandata.train.glm0, type="response")
+
+# define a cost function with input "obs" being observed response 
+# and "pi" being predicted probability, and "pcut" being the threshold.
+costfunc = function(obs, pred.p, pcut){
+  weight1 = 1   # define the weight for "true=1 but pred=0" (FN)
+  weight0 = 1    # define the weight for "true=0 but pred=1" (FP)
+  c1 = (obs==1)&(pred.p<pcut)    # count for "true=1 but pred=0"   (FN)
+  c0 = (obs==0)&(pred.p>=pcut)   # count for "true=0 but pred=1"   (FP)
+  cost = mean(weight1*c1 + weight0*c0)  # misclassification with weight
+  return(cost) # you have to return to a value when you write R functions
+} # end of the function
+
+# define a sequence from 0.01 to 1 by 0.01
+p.seq = seq(0.01, 1, 0.01) 
+
+# write a loop for all p-cut to see which one provides the smallest cost
+# first, need to define a 0 vector in order to save the value of cost from all pcut
+cost = rep(0, length(p.seq))  
+for(i in 1:length(p.seq)){ 
+  cost[i] = costfunc(obs = germandata.train$response, pred.p = predict_logit_train, pcut = p.seq[i])  
+} # end of the loop
+
+optimal.pcut = p.seq[which(cost==min(cost))][1]
+
+optimal.pcut
+```
+
+***
+
+**Plotting the symmetric misclassfication rate vs range of probability cutoffs**
+```{r}
+plot(p.seq, cost)
+```
+
+***
+
+**Train and Test Predictions**
+```{r}
+pred.glm.gtrain.glm0 <- predict(germandata.train.glm0, type = "response")
+pred.glm.gtest.glm0 <- predict(germandata.train.glm0, newdata=germandata.test,type = "response")
+
+pred.train <- as.numeric(pred.glm.gtrain.glm0 > optimal.pcut)
+pred.test <- as.numeric(pred.glm.gtest.glm0 > optimal.pcut)
+
+confusion_matrix_train <- table(germandata.train$response, pred.train)
+confusion_matrix_test <- table(germandata.test$response, pred.test)
+
+misclassification_rate_train <- round((confusion_matrix_train[2]+confusion_matrix_train[3])/sum(confusion_matrix_train), 2)
+misclassification_rate_test <- round((confusion_matrix_test[2]+confusion_matrix_test[3])/sum(confusion_matrix_test), 2)
+
+cat("train misclassfication rate:", misclassification_rate_train, "| test misclassfication rate:", misclassification_rate_test)
+```
+
+```{r}
+confusion_matrix_train
+```
+
+```{r}
+confusion_matrix_test
+```
+
+***
+
+**ROC Curve - Train**
+```{r}
+par(mfrow=c(1,1))
+roc.logit <- roc.plot(x=(germandata.train$response == "1"), pred =pred.glm.gtrain.glm0)
+```
+
+**AUC - Train**
+```{r}
+roc.logit$roc.vol[2]
+```
+
+**ROC Curve - Test**
+```{r}
+par(mfrow=c(1,1))
+roc.logit.test <- roc.plot(x=(germandata.test$response == "1"), pred =pred.glm.gtest.glm0)
+```
+
+**AUC - Train**
+
+```{r}
+roc.logit.test$roc.vol[2]
+```
+
+***
+
+**Finding the optimal probability cutoff value - Asymmetric cost (5:1)**
+```{r}
+# predicting on train set
+predict_logit_train <- predict(germandata.train.glm0, type="response")
+
+# define a cost function with input "obs" being observed response 
+# and "pi" being predicted probability, and "pcut" being the threshold.
+costfunc = function(obs, pred.p, pcut){
+  weight1 = 5   # define the weight for "true=1 but pred=0" (FN)
+  weight0 = 1    # define the weight for "true=0 but pred=1" (FP)
+  c1 = (obs==1)&(pred.p<pcut)    # count for "true=1 but pred=0"   (FN)
+  c0 = (obs==0)&(pred.p>=pcut)   # count for "true=0 but pred=1"   (FP)
+  cost = mean(weight1*c1 + weight0*c0)  # misclassification with weight
+  return(cost) # you have to return to a value when you write R functions
+} # end of the function
+
+# define a sequence from 0.01 to 1 by 0.01
+p.seq = seq(0.01, 1, 0.01) 
+
+# write a loop for all p-cut to see which one provides the smallest cost
+# first, need to define a 0 vector in order to save the value of cost from all pcut
+cost = rep(0, length(p.seq))  
+for(i in 1:length(p.seq)){ 
+  cost[i] = costfunc(obs = germandata.train$response, pred.p = predict_logit_train, pcut = p.seq[i])  
+} # end of the loop
+
+optimal.pcut.asymmetric = p.seq[which(cost==min(cost))][1]
+
+optimal.pcut.asymmetric
+```
+
+***
+
+**Plotting the symmetric misclassfication rate vs range of probability cutoffs**
+```{r}
+plot(p.seq, cost)
+```
+
+***
+
+**Defining a function to calculate Asymmetric Misclassfication Rate or Asymmetric Misclassification Cost**
+```{r}
+# Asymmetric Misclassification Rate, using  5:1 asymmetric cost
+# r - actual response
+# pi - predicted response
+cost <- function(r, pi){
+  weight1 = 5
+  weight0 = 1
+  c1 = (r==1)&(pi==0) #logical vector - true if actual 1 but predict 0
+  c0 = (r==0)&(pi==1) #logical vector - true if actual 0 but predict 1
+  return(mean(weight1*c1+weight0*c0))
+}
+
+# pcut <-  1/6 ## Bayes estimate
+pcut <-  optimal.pcut.asymmetric
+```
+
+***
+
+**Train and Test Asymmetric Misclassfication Rate or Asymmetric Misclassification Cost**
+```{r}
+class.pred.train.glm0 <- (pred.glm.gtrain.glm0>pcut)*1
+cost.train <- round(cost(r = germandata.train$response, pi = class.pred.train.glm0),2)
+
+class.pred.test.glm0<- (pred.glm.gtest.glm0>pcut)*1
+cost.test <- round(cost(r = germandata.test$response, pi = class.pred.test.glm0),2)
+
+cat("total train cost:", cost.train, "| total test cost:", cost.test)
+```
+
+## Classification Tree
+
+***
+
+**Building and plotting a Classificaion Tree using all variables**
+```{r}
+set.seed(27)
+germandata.largetree <- rpart(formula = response~., data = germandata.train, 
+                              parms = list(loss = matrix(c(0, 5, 1, 0), nrow = 2)))
+
+prp(germandata.largetree, extra = 1, nn.font=40,box.palette = "green")
+```
+
+***
+
+**Plotting the complexity parameters for all possible number of splits**
+
+```{r}
+plotcp(germandata.largetree)
+```
+
+***
+
+**Printing the complexity parameters for all possible number of splits**
+```{r}
+printcp(germandata.largetree)
+```
+
+***
+
+**Pruning the tree using optimal complexity parameter and then plotting the optimal tree**
+```{r}
+german.prunedtree <- rpart(response~., data = germandata.train, method = "class",
+                     parms = list(loss = matrix(c(0, 5, 1, 0), nrow = 2)),cp=0.015009)
+prp(german.prunedtree, extra = 1, nn.font=500,box.palette = "green")
+```
+
+***
+
+**Train and Test Predictions**
+
+```{r}
+pred.tree.gtrain <- predict(german.prunedtree, type = "prob")[,2]
+pred.tree.gtest <- predict(german.prunedtree, newdata=germandata.test, type = "prob")[,2]
+
+pred.train <- as.numeric(pred.tree.gtrain > optimal.pcut)
+pred.test <- as.numeric(pred.tree.gtest > optimal.pcut)
+
+confusion_matrix_train <- table(germandata.train$response, pred.train)
+confusion_matrix_test <- table(germandata.test$response, pred.test)
+
+misclassification_rate_train <- round((confusion_matrix_train[2]+confusion_matrix_train[3])/sum(confusion_matrix_train), 2)
+misclassification_rate_test <- round((confusion_matrix_test[2]+confusion_matrix_test[3])/sum(confusion_matrix_test), 2)
+
+cat("train misclassfication rate:", misclassification_rate_train, "| test misclassfication rate:", misclassification_rate_test)
+```
+
+```{r}
+confusion_matrix_train
+```
+
+```{r}
+confusion_matrix_test
+```
+
+***
+
+**ROC Curve - Train**
+```{r}
+par(mfrow=c(1,1))
+roc.logit <- roc.plot(x=(germandata.train$response == "1"), pred =pred.glm.gtrain.glm0)
+```
+
+**AUC - Train**
+```{r}
+roc.logit$roc.vol[2]
+```
+
+**ROC Curve - Test**
+```{r}
+par(mfrow=c(1,1))
+roc.logit.test <- roc.plot(x=(germandata.test$response == "1"), pred =pred.glm.gtest.glm0)
+```
+
+**AUC - Train**
+
+```{r}
+roc.logit.test$roc.vol[2]
+```
+
+***
+
+**Train and Test Asymmetric Misclassfication Rate or Asymmetric Misclassification Cost**
+```{r}
+class.pred.train.tree <- (pred.tree.gtrain>pcut)*1
+cost.train <- cost(r = germandata.train$response, pi = class.pred.train.tree) 
+
+class.pred.test.tree<- (pred.tree.gtest>pcut)*1
+cost.test <- cost(r = germandata.test$response, pi = class.pred.test.tree)
+
+cat("total train cost:", cost.train, "| total test cost:", cost.test)
+```
+
+## GAMs
+
+*** 
+
+**Building a Generalized Additive Model**
+```{r}
+germandata.gam <- gam(as.factor(response)~chk_acct+s(duration)+credit_his+purpose+s(amount)+saving_acct+present_emp+installment_rate+sex+other_debtor+present_resid+property
+                  +s(age)+other_install+housing+n_credits+telephone+foreign , family=binomial,data=germandata.train)
+
+summary(germandata.gam)
+```
+
+***
+
+**Plotting the non-linear terms in Generalized Additive Model**
+```{r}
+plot(germandata.gam, shade=TRUE)
+```
+
+***
+
+**Moving age to partially linear term**
+```{r}
+# Move age to partially linear term and refit gam() model
+germandata.gam <- gam(as.factor(response)~chk_acct+s(duration)+credit_his+purpose+s(amount)+saving_acct+present_emp+installment_rate+sex+other_debtor+present_resid+property
+                      +(age)+other_install+housing+n_credits+telephone+foreign , family=binomial,data=germandata.train)
+
+summary(germandata.gam)
+```
+
+***
+
+**Plotting the non-linear terms in Generalized Additive Model**
+```{r}
+plot(germandata.gam, shade=TRUE)
+```
+
+***
+
+**Train and Test Predictions**
+```{r}
+pred.glm.gtrain.gam <- predict(germandata.gam, type = "response")
+pred.glm.gtest.gam <- predict(germandata.gam, newdata=germandata.test,type = "response")
+
+pred.train <- as.numeric(pred.glm.gtrain.gam > optimal.pcut)
+pred.test <- as.numeric(pred.glm.gtest.gam > optimal.pcut)
+
+confusion_matrix_train <- table(germandata.train$response, pred.train)
+confusion_matrix_test <- table(germandata.test$response, pred.test)
+
+misclassification_rate_train <- round((confusion_matrix_train[2]+confusion_matrix_train[3])/sum(confusion_matrix_train), 2)
+misclassification_rate_test <- round((confusion_matrix_test[2]+confusion_matrix_test[3])/sum(confusion_matrix_test), 2)
+
+cat("train misclassfication rate:", misclassification_rate_train, "| test misclassfication rate:", misclassification_rate_test)
+```
+
+```{r}
+confusion_matrix_train
+```
+
+```{r}
+confusion_matrix_test
+```
+
+***
+
+**ROC Curve - Train**
+```{r}
+par(mfrow=c(1,1))
+roc.logit <- roc.plot(x=(germandata.train$response == "1"), pred =pred.glm.gtrain.glm0)
+```
+
+**AUC - Train**
+```{r}
+roc.logit$roc.vol[2]
+```
+
+**ROC Curve - Test**
+```{r}
+par(mfrow=c(1,1))
+roc.logit.test <- roc.plot(x=(germandata.test$response == "1"), pred =pred.glm.gtest.glm0)
+```
+
+**AUC - Train**
+
+```{r}
+roc.logit.test$roc.vol[2]
+```
+
+***
+
+**Train and Test Asymmetric Misclassfication Rate or Asymmetric Misclassification Cost**
+```{r}
+class.pred.train.gam <- (pred.glm.gtrain.gam>pcut)*1
+cost.train <- round(cost(r = germandata.train$response, pi = class.pred.train.gam),2)
+
+class.pred.test.gam<- (pred.glm.gtest.gam>pcut)*1
+cost.test <- round(cost(r = germandata.test$response, pi = class.pred.test.gam),2)
+
+cat("total train cost:", cost.train, "| total test cost:", cost.test)
+```
+
+## Neural Network
+
+***
+
+**Building a Neural Network Model**
+```{r results=FALSE}
+par(mfrow=c(1,1))
+germandata.nnet <- train(response~., data=germandata.train,method="nnet")
+```
+
+***
+
+**Summary Neural Net Model**
+```{r}
+print(germandata.nnet)
+```
+
+***
+
+**Plotting Neural Net Model**
+```{r}
+plot(germandata.nnet)
+```
+
+```{r}
+plotnet(germandata.nnet$finalModel, y_names = "response")
+title("Graphical Representation of our Neural Network")
+```
+
+***
+
+**Train and Test Predictions**
+```{r}
+pred.glm.gtrain.nn <- predict(germandata.nnet, type = "prob")[,2]
+pred.glm.gtest.nn <- predict(germandata.nnet, newdata=germandata.test,type = "prob")[,2]
+
+pred.train <- as.numeric(pred.glm.gtrain.nn > optimal.pcut)
+pred.test <- as.numeric(pred.glm.gtest.nn > optimal.pcut)
+
+confusion_matrix_train <- table(germandata.train$response, pred.train)
+confusion_matrix_test <- table(germandata.test$response, pred.test)
+
+misclassification_rate_train <- round((confusion_matrix_train[2]+confusion_matrix_train[3])/sum(confusion_matrix_train), 2)
+misclassification_rate_test <- round((confusion_matrix_test[2]+confusion_matrix_test[3])/sum(confusion_matrix_test), 2)
+
+cat("train misclassfication rate:", misclassification_rate_train, "| test misclassfication rate:", misclassification_rate_test)
+```
+
+```{r}
+confusion_matrix_train
+```
+
+```{r}
+confusion_matrix_test
+```
+
+***
+
+**ROC Curve - Train**
+```{r}
+par(mfrow=c(1,1))
+roc.logit <- roc.plot(x=(germandata.train$response == "1"), pred =pred.glm.gtrain.glm0)
+```
+
+**AUC - Train**
+```{r}
+roc.logit$roc.vol[2]
+```
+
+**ROC Curve - Test**
+```{r}
+par(mfrow=c(1,1))
+roc.logit.test <- roc.plot(x=(germandata.test$response == "1"), pred =pred.glm.gtest.glm0)
+```
+
+**AUC - Train**
+
+```{r}
+roc.logit.test$roc.vol[2]
+```
+
+***
+
+**Train and Test Asymmetric Misclassfication Rate or Asymmetric Misclassification Cost**
+```{r}
+class.pred.train.nn <- (pred.glm.gtrain.nn>pcut)*1
+cost.train <- round(cost(r = germandata.train$response, pi = class.pred.train.nn),2)
+
+class.pred.test.nn<- (pred.glm.gtest.nn>pcut)*1
+cost.test <- round(cost(r = germandata.test$response, pi = class.pred.test.nn),2)
+
+cat("total train cost:", cost.train, "| total test cost:", cost.test)
+```
